@@ -38,14 +38,14 @@ module Arel # :nodoc: all
       if unboundable?(other.begin) == 1 || unboundable?(other.end) == -1
         self.in([])
       elsif open_ended?(other.begin)
-        if other.end.nil? || open_ended?(other.end)
+        if open_ended?(other.end)
           not_in([])
         elsif other.exclude_end?
           lt(other.end)
         else
           lteq(other.end)
         end
-      elsif other.end.nil? || open_ended?(other.end)
+      elsif open_ended?(other.end)
         gteq(other.begin)
       elsif other.exclude_end?
         gteq(other.begin).and(lt(other.end))
@@ -60,13 +60,6 @@ module Arel # :nodoc: all
       case other
       when Arel::SelectManager
         Arel::Nodes::In.new(self, other.ast)
-      when Range
-        if $VERBOSE
-          warn <<-eowarn
-Passing a range to `#in` is deprecated. Call `#between`, instead.
-          eowarn
-        end
-        between(other)
       when Enumerable
         Nodes::In.new self, quoted_array(other)
       else
@@ -86,14 +79,14 @@ Passing a range to `#in` is deprecated. Call `#between`, instead.
       if unboundable?(other.begin) == 1 || unboundable?(other.end) == -1
         not_in([])
       elsif open_ended?(other.begin)
-        if other.end.nil? || open_ended?(other.end)
+        if open_ended?(other.end)
           self.in([])
         elsif other.exclude_end?
           gteq(other.end)
         else
           gt(other.end)
         end
-      elsif other.end.nil? || open_ended?(other.end)
+      elsif open_ended?(other.end)
         lt(other.begin)
       else
         left = lt(other.begin)
@@ -110,13 +103,6 @@ Passing a range to `#in` is deprecated. Call `#between`, instead.
       case other
       when Arel::SelectManager
         Arel::Nodes::NotIn.new(self, other.ast)
-      when Range
-        if $VERBOSE
-          warn <<-eowarn
-Passing a range to `#not_in` is deprecated. Call `#not_between`, instead.
-          eowarn
-        end
-        not_between(other)
       when Enumerable
         Nodes::NotIn.new self, quoted_array(other)
       else
@@ -250,7 +236,7 @@ Passing a range to `#not_in` is deprecated. Call `#not_between`, instead.
       end
 
       def open_ended?(value)
-        infinity?(value) || unboundable?(value)
+        value.nil? || infinity?(value) || unboundable?(value)
       end
   end
 end

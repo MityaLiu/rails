@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "active_record/connection_adapters/determine_if_preparable_visitor"
+require "set"
 require "active_record/connection_adapters/schema_cache"
 require "active_record/connection_adapters/sql_type_metadata"
 require "active_record/connection_adapters/abstract/schema_dumper"
@@ -13,44 +13,6 @@ require "arel/collectors/substitute_binds"
 
 module ActiveRecord
   module ConnectionAdapters # :nodoc:
-    extend ActiveSupport::Autoload
-
-    autoload :Column
-    autoload :ConnectionSpecification
-
-    autoload_at "active_record/connection_adapters/abstract/schema_definitions" do
-      autoload :IndexDefinition
-      autoload :ColumnDefinition
-      autoload :ChangeColumnDefinition
-      autoload :ForeignKeyDefinition
-      autoload :TableDefinition
-      autoload :Table
-      autoload :AlterTable
-      autoload :ReferenceDefinition
-    end
-
-    autoload_at "active_record/connection_adapters/abstract/connection_pool" do
-      autoload :ConnectionHandler
-    end
-
-    autoload_under "abstract" do
-      autoload :SchemaStatements
-      autoload :DatabaseStatements
-      autoload :DatabaseLimits
-      autoload :Quoting
-      autoload :ConnectionPool
-      autoload :QueryCache
-      autoload :Savepoints
-    end
-
-    autoload_at "active_record/connection_adapters/abstract/transaction" do
-      autoload :TransactionManager
-      autoload :NullTransaction
-      autoload :RealTransaction
-      autoload :SavepointTransaction
-      autoload :TransactionState
-    end
-
     # Active Record supports multiple database systems. AbstractAdapter and
     # related classes form the abstraction layer which makes this possible.
     # An AbstractAdapter represents a connection to a database, and provides an
@@ -75,9 +37,10 @@ module ActiveRecord
       include Savepoints
 
       SIMPLE_INT = /\A\d+\z/
+      COMMENT_REGEX = %r{/\*(?:[^\*]|\*[^/])*\*/}m
 
       attr_accessor :pool
-      attr_reader :visitor, :owner, :logger, :lock, :prepared_statements
+      attr_reader :visitor, :owner, :logger, :lock
       alias :in_use? :owner
 
       set_callback :checkin, :after, :enable_lazy_transactions!
@@ -100,9 +63,13 @@ module ActiveRecord
         end
       end
 
+      DEFAULT_READ_QUERY = [:begin, :commit, :explain, :release, :rollback, :savepoint, :select, :with] # :nodoc:
+      private_constant :DEFAULT_READ_QUERY
+
       def self.build_read_query_regexp(*parts) # :nodoc:
-        parts = parts.map { |part| /\A[\(\s]*#{part}/i }
-        Regexp.union(*parts)
+        parts += DEFAULT_READ_QUERY
+        parts = parts.map { |part| /#{part}/i }
+        /\A(?:[\(\s]|#{COMMENT_REGEX})*#{Regexp.union(*parts)}/
       end
 
       def self.quoted_column_names # :nodoc:
@@ -127,12 +94,9 @@ module ActiveRecord
         @statements = build_statement_pool
         @lock = ActiveSupport::Concurrency::LoadInterlockAwareMonitor.new
 
-        if self.class.type_cast_config_to_boolean(config.fetch(:prepared_statements) { true })
-          @prepared_statements = true
-          @visitor.extend(DetermineIfPreparableVisitor)
-        else
-          @prepared_statements = false
-        end
+        @prepared_statements = self.class.type_cast_config_to_boolean(
+          config.fetch(:prepared_statements, true)
+        )
 
         @advisory_locks_enabled = self.class.type_cast_config_to_boolean(
           config.fetch(:advisory_locks, true)
@@ -141,6 +105,10 @@ module ActiveRecord
 
       def replica?
         @config[:replica] || false
+      end
+
+      def use_metadata_table?
+        @config.fetch(:use_metadata_table, true)
       end
 
       # Determines whether writes are currently being prevents.
@@ -162,16 +130,27 @@ module ActiveRecord
       def schema_migration # :nodoc:
         @schema_migration ||= begin
                                 conn = self
-                                spec_name = conn.pool.spec.name
-                                name = "#{spec_name}::SchemaMigration"
+                                spec_name = conn.pool.pool_config.connection_specification_name
+
+                                return ActiveRecord::SchemaMigration if spec_name == "ActiveRecord::Base"
+
+                                schema_migration_name = "#{spec_name}::SchemaMigration"
 
                                 Class.new(ActiveRecord::SchemaMigration) do
-                                  define_singleton_method(:name) { name }
-                                  define_singleton_method(:to_s) { name }
+                                  define_singleton_method(:name) { schema_migration_name }
+                                  define_singleton_method(:to_s) { schema_migration_name }
 
                                   self.connection_specification_name = spec_name
                                 end
                               end
+      end
+
+      def prepared_statements
+        @prepared_statements && !prepared_statements_disabled_cache.include?(object_id)
+      end
+
+      def prepared_statements_disabled_cache # :nodoc:
+        Thread.current[:ar_prepared_statements_disabled_cache] ||= Set.new
       end
 
       class Version
@@ -258,10 +237,10 @@ module ActiveRecord
       end
 
       def unprepared_statement
-        old_prepared_statements, @prepared_statements = @prepared_statements, false
+        cache = prepared_statements_disabled_cache.add(object_id) if @prepared_statements
         yield
       ensure
-        @prepared_statements = old_prepared_statements
+        cache&.delete(object_id)
       end
 
       # Returns the human-readable name of the adapter. Use mixed case - one
@@ -299,6 +278,10 @@ module ActiveRecord
       # sequence before the insert statement? If true, next_sequence_value
       # is called before each insert to set the record's primary key.
       def prefetch_primary_key?(table_name = nil)
+        false
+      end
+
+      def supports_partitioned_indexes?
         false
       end
 
@@ -403,6 +386,10 @@ module ActiveRecord
 
       # Does this adapter support optimizer hints?
       def supports_optimizer_hints?
+        false
+      end
+
+      def supports_common_table_expressions?
         false
       end
 
@@ -574,10 +561,6 @@ module ActiveRecord
         pool.checkin self
       end
 
-      def column_name_for_operation(operation, node) # :nodoc:
-        visitor.compile(node)
-      end
-
       def default_index_type?(index) # :nodoc:
         index.using.nil?
       end
@@ -697,7 +680,6 @@ module ActiveRecord
             binds:             binds,
             type_casted_binds: type_casted_binds,
             statement_name:    statement_name,
-            connection_id:     object_id,
             connection:        self) do
             @lock.synchronize do
               yield
@@ -751,6 +733,14 @@ module ActiveRecord
         end
 
         def build_statement_pool
+        end
+
+        # Builds the result object.
+        #
+        # This is an internal hook to make possible connection adapters to build
+        # custom result objects with connection-specific data.
+        def build_result(columns:, rows:, column_types: {})
+          ActiveRecord::Result.new(columns, rows, column_types)
         end
     end
   end

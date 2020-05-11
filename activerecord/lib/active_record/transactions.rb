@@ -10,9 +10,6 @@ module ActiveRecord
     included do
       define_callbacks :commit, :rollback,
                        :before_commit,
-                       :before_commit_without_transaction_enrollment,
-                       :commit_without_transaction_enrollment,
-                       :rollback_without_transaction_enrollment,
                        scope: [:kind, :name]
     end
 
@@ -170,7 +167,7 @@ module ActiveRecord
     # writing, the only database that we're aware of that supports true nested
     # transactions, is MS-SQL. Because of this, Active Record emulates nested
     # transactions by using savepoints. See
-    # https://dev.mysql.com/doc/refman/5.7/en/savepoint.html
+    # https://dev.mysql.com/doc/refman/en/savepoint.html
     # for more information about savepoints.
     #
     # === \Callbacks
@@ -208,8 +205,8 @@ module ActiveRecord
     # Note that "TRUNCATE" is also a MySQL DDL statement!
     module ClassMethods
       # See the ConnectionAdapters::DatabaseStatements#transaction API docs.
-      def transaction(options = {}, &block)
-        connection.transaction(options, &block)
+      def transaction(**options, &block)
+        connection.transaction(**options, &block)
       end
 
       def before_commit(*args, &block) # :nodoc:
@@ -266,21 +263,6 @@ module ActiveRecord
         set_callback(:rollback, :after, *args, &block)
       end
 
-      def before_commit_without_transaction_enrollment(*args, &block) # :nodoc:
-        set_options_for_callbacks!(args)
-        set_callback(:before_commit_without_transaction_enrollment, :before, *args, &block)
-      end
-
-      def after_commit_without_transaction_enrollment(*args, &block) # :nodoc:
-        set_options_for_callbacks!(args)
-        set_callback(:commit_without_transaction_enrollment, :after, *args, &block)
-      end
-
-      def after_rollback_without_transaction_enrollment(*args, &block) # :nodoc:
-        set_options_for_callbacks!(args)
-        set_callback(:rollback_without_transaction_enrollment, :after, *args, &block)
-      end
-
       private
         def set_options_for_callbacks!(args, enforced_options = {})
           options = args.extract_options!.merge!(enforced_options)
@@ -302,28 +284,27 @@ module ActiveRecord
     end
 
     # See ActiveRecord::Transactions::ClassMethods for detailed documentation.
-    def transaction(options = {}, &block)
-      self.class.transaction(options, &block)
+    def transaction(**options, &block)
+      self.class.transaction(**options, &block)
     end
 
     def destroy #:nodoc:
       with_transaction_returning_status { super }
     end
 
-    def save(*) #:nodoc:
+    def save(**) #:nodoc:
       with_transaction_returning_status { super }
     end
 
-    def save!(*) #:nodoc:
+    def save!(**) #:nodoc:
       with_transaction_returning_status { super }
     end
 
-    def touch(*) #:nodoc:
+    def touch(*, **) #:nodoc:
       with_transaction_returning_status { super }
     end
 
     def before_committed! # :nodoc:
-      _run_before_commit_without_transaction_enrollment_callbacks
       _run_before_commit_callbacks
     end
 
@@ -332,14 +313,13 @@ module ActiveRecord
     # Ensure that it is not called if the object was never persisted (failed create),
     # but call it after the commit of a destroyed object.
     def committed!(should_run_callbacks: true) #:nodoc:
+      force_clear_transaction_record_state
       if should_run_callbacks
         @_committed_already_called = true
-        _run_commit_without_transaction_enrollment_callbacks
         _run_commit_callbacks
       end
     ensure
-      @_committed_already_called = false
-      force_clear_transaction_record_state
+      @_committed_already_called = @_trigger_update_callback = @_trigger_destroy_callback = false
     end
 
     # Call the #after_rollback callbacks. The +force_restore_state+ argument indicates if the record
@@ -347,11 +327,11 @@ module ActiveRecord
     def rolledback!(force_restore_state: false, should_run_callbacks: true) #:nodoc:
       if should_run_callbacks
         _run_rollback_callbacks
-        _run_rollback_without_transaction_enrollment_callbacks
       end
     ensure
       restore_transaction_record_state(force_restore_state)
       clear_transaction_record_state
+      @_trigger_update_callback = @_trigger_destroy_callback = false if force_restore_state
     end
 
     # Executes +method+ within a transaction and captures its return value as a
@@ -390,6 +370,7 @@ module ActiveRecord
         @_start_transaction_state ||= {
           id: id,
           new_record: @new_record,
+          previously_new_record: @previously_new_record,
           destroyed: @destroyed,
           attributes: @attributes,
           frozen?: frozen?,
@@ -422,6 +403,7 @@ module ActiveRecord
         if restore_state = @_start_transaction_state
           if force_restore_state || restore_state[:level] <= 1
             @new_record = restore_state[:new_record]
+            @previously_new_record = restore_state[:previously_new_record]
             @destroyed  = restore_state[:destroyed]
             @attributes = restore_state[:attributes].map do |attr|
               value = @attributes.fetch_value(attr.name)

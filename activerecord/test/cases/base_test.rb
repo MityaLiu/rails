@@ -27,6 +27,7 @@ require "models/bird"
 require "models/car"
 require "models/bulb"
 require "concurrent/atomic/count_down_latch"
+require "active_support/core_ext/enumerable"
 
 class FirstAbstractClass < ActiveRecord::Base
   self.abstract_class = true
@@ -77,6 +78,22 @@ class BasicsTest < ActiveRecord::TestCase
     assert_equal "Post::GeneratedRelationMethods", mod.inspect
   end
 
+  def test_incomplete_schema_loading
+    topic = Topic.first
+    payload = { foo: 42 }
+    topic.update!(content: payload)
+
+    Topic.reset_column_information
+
+    Topic.connection.stub(:lookup_cast_type_from_column, ->(_) { raise "Some Error" }) do
+      assert_raises RuntimeError do
+        Topic.columns_hash
+      end
+    end
+
+    assert_equal payload, Topic.first.content
+  end
+
   def test_column_names_are_escaped
     conn      = ActiveRecord::Base.connection
     classname = conn.class.name[/[^:]*$/]
@@ -85,7 +102,6 @@ class BasicsTest < ActiveRecord::TestCase
       "Mysql2Adapter"     => "`",
       "PostgreSQLAdapter" => '"',
       "OracleAdapter"     => '"',
-      "FbAdapter"         => '"'
     }.fetch(classname) {
       raise "need a bad char for #{classname}"
     }
@@ -205,7 +221,7 @@ class BasicsTest < ActiveRecord::TestCase
     )
 
     # For adapters which support microsecond resolution.
-    if subsecond_precision_supported?
+    if supports_datetime_with_precision?
       assert_equal 11, Topic.find(1).written_on.sec
       assert_equal 223300, Topic.find(1).written_on.usec
       assert_equal 9900, Topic.find(2).written_on.usec
@@ -522,6 +538,10 @@ class BasicsTest < ActiveRecord::TestCase
     assert_equal Topic.find("1-meowmeow"), Topic.find(1)
   end
 
+  def test_out_of_range_slugs
+    assert_equal [Topic.find(1)], Topic.where(id: ["1-meowmeow", "9223372036854775808-hello"])
+  end
+
   def test_find_by_slug_with_array
     assert_equal Topic.find([1, 2]), Topic.find(["1-meowmeow", "2-hello"])
     assert_equal "The Second Topic of the day", Topic.find(["2-hello", "1-meowmeow"]).first.title
@@ -716,9 +736,9 @@ class BasicsTest < ActiveRecord::TestCase
   def test_attributes
     category = Category.new(name: "Ruby")
 
-    expected_attributes = category.attribute_names.map do |attribute_name|
-      [attribute_name, category.public_send(attribute_name)]
-    end.to_h
+    expected_attributes = category.attribute_names.index_with do |attribute_name|
+      category.public_send(attribute_name)
+    end
 
     assert_instance_of Hash, category.attributes
     assert_equal expected_attributes, category.attributes
@@ -727,6 +747,12 @@ class BasicsTest < ActiveRecord::TestCase
   def test_new_record_returns_boolean
     assert_equal false, Topic.new.persisted?
     assert_equal true, Topic.find(1).persisted?
+  end
+
+  def test_previously_new_record_returns_boolean
+    assert_equal false, Topic.new.previously_new_record?
+    assert_equal true, Topic.create.previously_new_record?
+    assert_equal false, Topic.find(1).previously_new_record?
   end
 
   def test_dup
@@ -1154,7 +1180,7 @@ class BasicsTest < ActiveRecord::TestCase
 
   def test_current_scope_is_reset
     Object.const_set :UnloadablePost, Class.new(ActiveRecord::Base)
-    UnloadablePost.send(:current_scope=, UnloadablePost.all)
+    UnloadablePost.current_scope = UnloadablePost.all
 
     UnloadablePost.unloadable
     klass = UnloadablePost
@@ -1167,6 +1193,16 @@ class BasicsTest < ActiveRecord::TestCase
 
   def test_marshal_round_trip
     expected = posts(:welcome)
+    marshalled = Marshal.dump(expected)
+    actual = Marshal.load(marshalled)
+
+    assert_equal expected.attributes, actual.attributes
+  end
+
+  def test_marshal_inspected_round_trip
+    expected = posts(:welcome)
+    expected.inspect
+
     marshalled = Marshal.dump(expected)
     actual = Marshal.load(marshalled)
 
@@ -1471,6 +1507,10 @@ class BasicsTest < ActiveRecord::TestCase
     assert_equal "Developer: name", loaded_developer.name
   end
 
+  test "when assigning new ignored columns it invalidates cache for column names" do
+    assert_not_includes ColumnNamesCachedDeveloper.column_names, "name"
+  end
+
   test "ignored columns not included in SELECT" do
     query = Developer.all.to_sql.downcase
 
@@ -1563,6 +1603,14 @@ class BasicsTest < ActiveRecord::TestCase
         end
       end
     end
+  end
+
+  test "cannot call connected_to on subclasses of ActiveRecord::Base" do
+    error = assert_raises(NotImplementedError) do
+      Bird.connected_to(role: :reading) { }
+    end
+
+    assert_equal "connected_to can only be called on ActiveRecord::Base", error.message
   end
 
   test "preventing writes applies to all connections on a handler" do

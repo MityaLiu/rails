@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "mutex_m"
+require "active_support/core_ext/enumerable"
 
 module ActiveRecord
   # = Active Record Attribute Methods
@@ -115,13 +116,11 @@ module ActiveRecord
       # A class method is 'dangerous' if it is already (re)defined by Active Record, but
       # not by any ancestors. (So 'puts' is not dangerous but 'new' is.)
       def dangerous_class_method?(method_name)
-        RESTRICTED_CLASS_METHODS.include?(method_name.to_s) || class_method_defined_within?(method_name, Base)
-      end
+        return true if RESTRICTED_CLASS_METHODS.include?(method_name.to_s)
 
-      def class_method_defined_within?(name, klass, superklass = klass.superclass) # :nodoc:
-        if klass.respond_to?(name, true)
-          if superklass.respond_to?(name, true)
-            klass.method(name).owner != superklass.method(name).owner
+        if Base.respond_to?(method_name, true)
+          if Object.respond_to?(method_name, true)
+            Base.method(method_name).owner != Object.method(method_name).owner
           else
             true
           end
@@ -377,8 +376,8 @@ module ActiveRecord
       end
 
       def attributes_with_values(attribute_names)
-        attribute_names.each_with_object({}) do |name, attrs|
-          attrs[name] = _read_attribute(name)
+        attribute_names.index_with do |name|
+          _read_attribute(name)
         end
       end
 
@@ -403,7 +402,7 @@ module ActiveRecord
         if value.is_a?(String) && value.length > 50
           "#{value[0, 50]}...".inspect
         elsif value.is_a?(Date) || value.is_a?(Time)
-          %("#{value.to_s(:db)}")
+          %("#{value.to_s(:inspect)}")
         else
           value.inspect
         end

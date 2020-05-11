@@ -27,7 +27,7 @@ module ActionView #:nodoc:
   #     Name: <%= person.name %><br/>
   #   <% end %>
   #
-  # The loop is setup in regular embedding tags <tt><% %></tt>, and the name is written using the output embedding tag <tt><%= %></tt>. Note that this
+  # The loop is set up in regular embedding tags <tt><% %></tt>, and the name is written using the output embedding tag <tt><%= %></tt>. Note that this
   # is not just a usage suggestion. Regular output functions like print or puts won't work with ERB templates. So this would be wrong:
   #
   #   <%# WRONG %>
@@ -162,6 +162,9 @@ module ActionView #:nodoc:
     # Specify whether submit_tag should automatically disable on click
     cattr_accessor :automatically_disable_submit_tag, default: true
 
+    # Render template filenames as comments in HTML
+    cattr_accessor :annotate_template_file_names, default: false
+
     class_attribute :_routes
     class_attribute :logger
 
@@ -280,7 +283,7 @@ module ActionView #:nodoc:
         ActiveSupport::Deprecation.warn <<~eowarn.squish
           ActionView::Base instances must implement `compiled_method_container`
           or use the class method `with_empty_template_cache` for constructing
-          an ActionView::Base instances that has an empty cache.
+          an ActionView::Base instance that has an empty cache.
         eowarn
       end
 

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/object/try"
+require "active_support/core_ext/date_time/conversions"
 
 module DateAndTime
   module Calculations
@@ -29,6 +30,18 @@ module DateAndTime
     def today?
       to_date == ::Date.current
     end
+
+    # Returns true if the date/time is tomorrow.
+    def tomorrow?
+      to_date == ::Date.current.tomorrow
+    end
+    alias :next_day? :tomorrow?
+
+    # Returns true if the date/time is yesterday.
+    def yesterday?
+      to_date == ::Date.current.yesterday
+    end
+    alias :prev_day? :yesterday?
 
     # Returns true if the date/time is in the past.
     def past?

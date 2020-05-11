@@ -32,7 +32,7 @@ if ActiveRecord::Base.connection.supports_foreign_keys?
         end
 
         class CreateRocketsMigration < ActiveRecord::Migration::Current
-          def up
+          def change
             create_table :rockets do |t|
               t.string :name
             end
@@ -41,11 +41,6 @@ if ActiveRecord::Base.connection.supports_foreign_keys?
               t.string :name
               t.references :rocket, foreign_key: true
             end
-          end
-
-          def down
-            drop_table :astronauts, if_exists: true
-            drop_table :rockets, if_exists: true
           end
         end
 
@@ -332,6 +327,20 @@ if ActiveRecord::Base.connection.supports_foreign_keys?
           assert_not @connection.foreign_key_exists?(:astronauts, name: "other_fancy_named_fk")
         end
 
+        def test_foreign_key_exists_in_change_table
+          @connection.change_table(:astronauts) do |t|
+            t.foreign_key :rockets, column: "rocket_id", name: "fancy_named_fk"
+
+            assert t.foreign_key_exists?(column: "rocket_id")
+            assert_not t.foreign_key_exists?(column: "star_id")
+
+            unless current_adapter?(:SQLite3Adapter)
+              assert t.foreign_key_exists?(name: "fancy_named_fk")
+              assert_not t.foreign_key_exists?(name: "other_fancy_named_fk")
+            end
+          end
+        end
+
         def test_remove_foreign_key_inferes_column
           @connection.add_foreign_key :astronauts, :rockets
 
@@ -519,18 +528,13 @@ if ActiveRecord::Base.connection.supports_foreign_keys?
         end
 
         class CreateSchoolsAndClassesMigration < ActiveRecord::Migration::Current
-          def up
+          def change
             create_table(:schools)
 
             create_table(:classes) do |t|
               t.references :school
             end
-            add_foreign_key :classes, :schools
-          end
-
-          def down
-            drop_table :classes, if_exists: true
-            drop_table :schools, if_exists: true
+            add_foreign_key :classes, :schools, validate: true
           end
         end
 

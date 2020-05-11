@@ -277,9 +277,19 @@ since an attacker could use this action to access security sensitive files in yo
 
 TIP: `send_file` is often a faster and better option if a layout isn't required.
 
+#### Rendering objects
+
+Rails can render objects responding to `:render_in`.
+
+```ruby
+render MyComponent.new
+```
+
+This calls `render_in` on the provided object with the current view context.
+
 #### Options for `render`
 
-Calls to the `render` method generally accept five options:
+Calls to the `render` method generally accept six options:
 
 * `:content_type`
 * `:layout`
@@ -411,7 +421,7 @@ If a template with the specified format does not exist an `ActionView::MissingTe
 ##### The `:variants` Option
 
 This tells Rails to look for template variations of the same format.
-You can specify a list of variants by passing the `:variants` option with a symbol or an array. 
+You can specify a list of variants by passing the `:variants` option with a symbol or an array.
 
 An example of use would be this.
 
@@ -438,11 +448,11 @@ end
 private
 
 def determine_variant
-  variant = nil 
+  variant = nil
   # some code to determine the variant(s) to use
   variant = :mobile if session[:use_mobile]
-  
-  variant    
+
+  variant
 end
 ```
 
@@ -1097,9 +1107,9 @@ definitions for several similar resources:
 * `users/index.html.erb`
 
     ```html+erb
-    <%= render "shared/search_filters", search: @q do |f| %>
+    <%= render "shared/search_filters", search: @q do |form| %>
       <p>
-        Name contains: <%= f.text_field :name_contains %>
+        Name contains: <%= form.text_field :name_contains %>
       </p>
     <% end %>
     ```
@@ -1107,9 +1117,9 @@ definitions for several similar resources:
 * `roles/index.html.erb`
 
     ```html+erb
-    <%= render "shared/search_filters", search: @q do |f| %>
+    <%= render "shared/search_filters", search: @q do |form| %>
       <p>
-        Title contains: <%= f.text_field :title_contains %>
+        Title contains: <%= form.text_field :title_contains %>
       </p>
     <% end %>
     ```
@@ -1117,13 +1127,13 @@ definitions for several similar resources:
 * `shared/_search_filters.html.erb`
 
     ```html+erb
-    <%= form_for(search) do |f| %>
+    <%= form_with model: search do |form| %>
       <h1>Search form:</h1>
       <fieldset>
-        <%= yield f %>
+        <%= yield form %>
       </fieldset>
       <p>
-        <%= f.submit "Search" %>
+        <%= form.submit "Search" %>
       </p>
     <% end %>
     ```
@@ -1163,13 +1173,13 @@ You can also pass local variables into partials, making them even more powerful 
 * `_form.html.erb`
 
     ```html+erb
-    <%= form_for(zone) do |f| %>
+    <%= form_with model: zone do |form| %>
       <p>
         <b>Zone name</b><br>
-        <%= f.text_field :name %>
+        <%= form.text_field :name %>
       </p>
       <p>
-        <%= f.submit %>
+        <%= form.submit %>
       </p>
     <% end %>
     ```

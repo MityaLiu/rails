@@ -26,7 +26,7 @@ module ActiveRecord
       # Allow database path relative to Rails.root, but only if the database
       # path is not the special path that tells sqlite to build a database only
       # in memory.
-      if ":memory:" != config[:database]
+      if ":memory:" != config[:database] && !config[:database].to_s.start_with?("file:")
         config[:database] = File.expand_path(config[:database], Rails.root) if defined?(Rails.root)
         dirname = File.dirname(config[:database])
         Dir.mkdir(dirname) unless File.directory?(dirname)
@@ -101,7 +101,7 @@ module ActiveRecord
       def self.database_exists?(config)
         config = config.symbolize_keys
         if config[:database] == ":memory:"
-          return true
+          true
         else
           database_file = defined?(Rails.root) ? File.expand_path(config[:database], Rails.root) : config[:database]
           File.exist?(database_file)
@@ -113,6 +113,10 @@ module ActiveRecord
       end
 
       def supports_savepoints?
+        true
+      end
+
+      def supports_transaction_isolation?
         true
       end
 
@@ -144,6 +148,10 @@ module ActiveRecord
         true
       end
 
+      def supports_common_table_expressions?
+        database_version >= "3.8.3"
+      end
+
       def supports_insert_on_conflict?
         database_version >= "3.24.0"
       end
@@ -169,13 +177,6 @@ module ActiveRecord
 
       def supports_index_sort_order?
         true
-      end
-
-      # Returns 62. SQLite supports index names up to 64
-      # characters. The rest is used by Rails internally to perform
-      # temporary rename operations
-      def allowed_index_name_length
-        index_name_length - 2
       end
 
       def native_database_types #:nodoc:
@@ -218,8 +219,11 @@ module ActiveRecord
         pks.sort_by { |f| f["pk"] }.map { |f| f["name"] }
       end
 
-      def remove_index(table_name, options = {}) #:nodoc:
-        index_name = index_name_for_remove(table_name, options)
+      def remove_index(table_name, column_name, options = {}) # :nodoc:
+        return if options[:if_exists] && !index_exists?(table_name, column_name, options)
+
+        index_name = index_name_for_remove(table_name, column_name, options)
+
         exec_query "DROP INDEX #{quote_column_name(index_name)}"
       end
 
@@ -234,17 +238,17 @@ module ActiveRecord
         rename_table_indexes(table_name, new_name)
       end
 
-      def add_column(table_name, column_name, type, options = {}) #:nodoc:
+      def add_column(table_name, column_name, type, **options) #:nodoc:
         if invalid_alter_table_type?(type, options)
           alter_table(table_name) do |definition|
-            definition.column(column_name, type, options)
+            definition.column(column_name, type, **options)
           end
         else
           super
         end
       end
 
-      def remove_column(table_name, column_name, type = nil, options = {}) #:nodoc:
+      def remove_column(table_name, column_name, type = nil, **options) #:nodoc:
         alter_table(table_name) do |definition|
           definition.remove_column column_name
           definition.foreign_keys.delete_if do |_, fk_options|
@@ -315,10 +319,15 @@ module ActiveRecord
           sql << " ON CONFLICT #{insert.conflict_target} DO NOTHING"
         elsif insert.update_duplicates?
           sql << " ON CONFLICT #{insert.conflict_target} DO UPDATE SET "
+          sql << insert.touch_model_timestamps_unless { |column| "#{column} IS excluded.#{column}" }
           sql << insert.updatable_columns.map { |column| "#{column}=excluded.#{column}" }.join(",")
         end
 
         sql
+      end
+
+      def shared_cache? # :nodoc:
+        @config.fetch(:flags, 0).anybits?(::SQLite3::Constants::Open::SHAREDCACHE)
       end
 
       def get_database_version # :nodoc:
@@ -353,7 +362,8 @@ module ActiveRecord
         # See: https://www.sqlite.org/lang_altertable.html
         # SQLite has an additional restriction on the ALTER TABLE statement
         def invalid_alter_table_type?(type, options)
-          type.to_sym == :primary_key || options[:primary_key]
+          type.to_sym == :primary_key || options[:primary_key] ||
+            options[:null] == false && options[:default].nil?
         end
 
         def alter_table(table_name, foreign_keys = foreign_keys(table_name), **options)
@@ -366,7 +376,7 @@ module ActiveRecord
                 fk.options[:column] = column
               end
               to_table = strip_table_name_prefix_and_suffix(fk.to_table)
-              definition.foreign_key(to_table, fk.options)
+              definition.foreign_key(to_table, **fk.options)
             end
 
             yield definition if block_given?
@@ -388,7 +398,7 @@ module ActiveRecord
         def copy_table(from, to, options = {})
           from_primary_key = primary_key(from)
           options[:id] = false
-          create_table(to, options) do |definition|
+          create_table(to, **options) do |definition|
             @definition = definition
             if from_primary_key.is_a?(Array)
               @definition.primary_keys from_primary_key
